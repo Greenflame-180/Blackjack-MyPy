@@ -41,7 +41,15 @@ def stand(player, game_state):
 
 player_count = int(input("How many players: "))
 
-decks = math.ceil((player_count + 1) * 1.25)
+
+if player_count < 2:
+    decks = 2
+elif player_count == 3:
+    decks = 3
+elif player_count > 3:
+    decks = math.ceil((player_count + 1) * 1.15)
+if decks > 8:
+    decks = 8
 base_deck = Gen.deck(decks)
 
 game_state = {

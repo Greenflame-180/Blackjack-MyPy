@@ -1,8 +1,9 @@
 import network
 import socket
 import time
+import gc
 
-# 1. Force clear any old states
+# 1. Start the Hotspot cleanly
 ap = network.WLAN(network.AP_IF)
 ap.active(False)
 time.sleep(1.0)
@@ -10,8 +11,6 @@ time.sleep(1.0)
 ap.active(True)
 time.sleep(1.0)
 
-# Configure with an explicit channel (6) and a 11bgn hidden baseline
-# ESP32-S3 runs much more stable with a short WPA2 password than completely open
 ap.config(
     ssid='MyESP32S3_AP',
     password='password123',
@@ -19,13 +18,10 @@ ap.config(
     authmode=network.AUTH_WPA2_PSK
 )
 
-# Wait for interface to settle
 time.sleep(1.0)
-ip_config = ap.ifconfig()
-ip_address = ip_config[0] # Typically 192.168.4.1
+ip_address = ap.ifconfig()[0]
 
 print(f"--- SERVER BROADCASTING ---")
-print(f"SSID: MyESP32S3_AP | Pass: password123")
 print(f"Server IP Address: {ip_address}")
 
 # 2. Open UDP Socket
@@ -37,8 +33,29 @@ print("Listening for UDP data packets...\n")
 
 try:
     while True:
-        data, addr = server_socket.recvfrom(1024)
-        print(f"[{addr}]: {data.decode('utf-8')}")
+        gc.collect()  # Prevent memory leakage
+
+        # Add a micro-delay to keep the CPU from maxing out if it misbehaves
+        time.sleep_ms(10)
+
+        try:
+            data, addr = server_socket.recvfrom(1024)
+
+            # CRITICAL FIX: Skip empty packets or broken signals
+            if not data or len(data) == 0:
+                continue
+
+            # Safely decode only valid text data
+            text = data.decode('utf-8').strip()
+            if text:
+                print(f"[{addr[0]}]: {text}")
+
+        except UnicodeError:
+            print("Received bad binary packet (failed to decode as text)")
+        except OSError as e:
+            # If socket drops or hits an error, print it instead of looping garbage
+            print(f"Socket tracking glitch: {e}")
+            time.sleep(1)
 
 except KeyboardInterrupt:
     print("Stopping Server...")

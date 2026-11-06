@@ -34,7 +34,7 @@ print(f"\n--- CONNECTED --- Local IP: {wlan.ifconfig()[0]}")
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 client_socket.setblocking(False)
 
-# Initialize Dual-Channel Poller (Listens to network and terminal streams simultaneously)
+# Initialize Dual-Channel Poller
 poller = uselect.poll()
 poller.register(client_socket, uselect.POLLIN)
 poller.register(sys.stdin, uselect.POLLIN)
@@ -53,20 +53,19 @@ try:
     while True:
         gc.collect()
 
-        # Async event block
-        events = poller.poll(150)
+        events = poller.poll(100)
 
         for stream, event in events:
-            # Channel A: Incoming Network Transmission Data
+            # Channel A: Incoming transmissions from the Server or other clients
             if stream == client_socket and (event & uselect.POLLIN):
                 try:
                     data, addr = client_socket.recvfrom(1024)
                     if data:
-                        print(f"\n{data.decode('utf-8')}")
+                        print(f"{data.decode('utf-8')}")
                 except OSError:
                     pass
 
-            # Channel B: Local Character Entry via Terminal Input Pipeline
+            # Channel B: Local console key entry pipeline
             elif stream == sys.stdin and (event & uselect.POLLIN):
                 message = sys.stdin.readline().strip()
                 if not message:
@@ -75,10 +74,13 @@ try:
                 if message.lower() == 'exit':
                     raise KeyboardInterrupt
 
+                # Visual Echo: Print local message out so you can see your own entry history
+                print(f"You > {message}")
+
                 try:
                     client_socket.sendto(message.encode('utf-8'), (SERVER_IP, PORT))
                 except OSError:
-                    print("Network delivery pipeline dropped a frame.")
+                    print("[ERROR] Transmission pipeline dropped a frame.")
 
 except KeyboardInterrupt:
     print("\nDisconnecting Chat node...")

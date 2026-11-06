@@ -23,35 +23,36 @@ time.sleep(1.0)
 IP_ADDRESS = ap.ifconfig()[0]
 PORT = 5005
 
-# Dynamic Client Tracking System (Limit: 10 Clients)
 MAX_CLIENTS = 10
-client_registry = {}  # Format: { (ip, port): client_id }
+client_registry = {}  # Tracks { (ip, port): client_id }
 next_available_id = 1
 
-# Configure UDP Server Socket
+# Configure Async UDP Server Socket
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server_socket.bind((IP_ADDRESS, PORT))
 server_socket.setblocking(False)
 
-# Initialize the Listener Engine (Polles both the Radio Socket AND Server Console Input)
+# Register Radio and Raw Keyboard Streams with Poller Engine
 poller = uselect.poll()
 poller.register(server_socket, uselect.POLLIN)
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("--- MULTI-CLIENT ASYNC SERVER ONLINE ---")
-print(f"Server IP: {IP_ADDRESS} | Port: {PORT}")
-print("Type text in this console to broadcast to ALL clients.")
-print("Awaiting network traffic...\n")
+print("--- INTERACTIVE MULTI-CLIENT SERVER ONLINE ---")
+print(f"IP: {IP_ADDRESS} | Port: {PORT}")
+print("Start typing down here to broadcast to all nodes.\n")
+sys.stdout.write("Server > ")
+
+server_input_buffer = ""
 
 try:
     while True:
         gc.collect()
 
-        # Poll for I/O events (100ms block)
-        events = poller.poll(100)
+        # Poll for IO traffic (50ms sleep step)
+        events = poller.poll(50)
 
         for stream, event in events:
-            # Channel A: Data incoming from client nodes over the air
+            # Channel A: Incoming Network Radio Packets
             if stream == server_socket and (event & uselect.POLLIN):
                 try:
                     data, addr = server_socket.recvfrom(1024)
@@ -60,74 +61,70 @@ try:
 
                     decoded_text = data.decode('utf-8').strip()
 
-                    # Manage Dynamic Client ID Assignment
+                    # Manage Dynamic ID Mapping System
                     if addr not in client_registry:
                         if len(client_registry) < MAX_CLIENTS:
                             client_registry[addr] = next_available_id
-                            print(f"[SYSTEM] Auto-assigned ID {next_available_id} to connection: {addr}")
+                            # Clear current prompt, log message, restore prompt
+                            sys.stdout.write(
+                                f"\r[SYSTEM] Client {next_available_id} connected from {addr}\nServer > {server_input_buffer}")
                             next_available_id += 1
                         else:
-                            server_socket.sendto(b"[SYSTEM ERROR] Server full.", addr)
+                            server_socket.sendto(b"[SYSTEM] Server Full.", addr)
                             continue
 
                     sender_id = client_registry[addr]
 
-                    # Ignore initial registration handshake ping from printing
+                    # Ignore baseline connection handshakes from cluttering feed
                     if decoded_text == "[Hello System]":
                         continue
 
-                    # Handle Private Routing vs Global Broadcast
-                    if decoded_text.startswith("@"):
-                        try:
-                            parts = decoded_text.split(" ", 1)
-                            target_id = int(parts[0][1:])  # Extract ID digit accurately
-                            payload = parts[1] if len(parts) > 1 else ""
+                    # Print client message locally to server logs safely
+                    sys.stdout.write(f"\rClient {sender_id}: {decoded_text}\nServer > {server_input_buffer}")
 
-                            target_addr = next((a for a, uid in client_registry.items() if uid == target_id), None)
+                    # Broadcast packet out to EVERY other registered client
+                    broadcast_payload = f"Client {sender_id}: {decoded_text}".encode('utf-8')
+                    for client_addr in client_registry:
+                        if client_addr != addr:  # Do not echo to original sender
+                            try:
+                                server_socket.sendto(broadcast_payload, client_addr)
+                            except OSError:
+                                pass
+                except Exception:
+                    pass
 
-                            if target_addr:
-                                direct_msg = f"[Private from Client {sender_id}]: {payload}"
-                                server_socket.sendto(direct_msg.encode('utf-8'), target_addr)
-                                print(f"Routed Private: Client {sender_id} -> Client {target_id}")
-                            else:
-                                server_socket.sendto(f"[SYSTEM] Client {target_id} is offline.".encode('utf-8'), addr)
-                        except (ValueError, IndexError):
-                            server_socket.sendto(b"[SYSTEM] Invalid whisper format. Use: @[ID] [message]", addr)
-
-                    else:
-                        # Broadcast message out to all other clients
-                        print(f"Client {sender_id}: {decoded_text}")
-                        broadcast_msg = f"Client {sender_id}: {decoded_text}"
-
-                        for client_addr in client_registry:
-                            if client_addr != addr:  # Don't echo back to the person who sent it
-                                try:
-                                    server_socket.sendto(broadcast_msg.encode('utf-8'), client_addr)
-                                except OSError:
-                                    pass
-
-                except Exception as e:
-                    print(f"Radio channel handling error: {e}")
-
-            # Channel B: The Server Admin types a broadcast message into the local terminal
+            # Channel B: Character-by-Character Server Terminal Input
             elif stream == sys.stdin and (event & uselect.POLLIN):
-                server_message = sys.stdin.readline().strip()
-                if not server_message:
-                    continue
+                char = sys.stdin.read(1)  # Read exactly 1 byte non-blockingly
 
-                print(f"Server (You): {server_message}")
-                outgoing_payload = f"[SERVER ANNOUNCEMENT]: {server_message}".encode('utf-8')
+                if char == '\r' or char == '\n':  # Enter Key pressed
+                    if server_input_buffer.strip():
+                        # Push message down to all registered clients
+                        outgoing_announcement = f"[SERVER]: {server_input_buffer}".encode('utf-8')
+                        for client_addr in client_registry:
+                            try:
+                                server_socket.sendto(outgoing_announcement, client_addr)
+                            except OSError:
+                                pass
 
-                # Push message down to every registered client
-                for client_addr in client_registry:
-                    try:
-                        server_socket.sendto(outgoing_payload, client_addr)
-                    except OSError:
-                        pass
+                        sys.stdout.write("\n")
+                    else:
+                        sys.stdout.write("\n")
+
+                    server_input_buffer = ""
+                    sys.stdout.write("Server > ")
+
+                elif char == '\x08' or char == '\x7f':  # Backspace processing
+                    if len(server_input_buffer) > 0:
+                        server_input_buffer = server_input_buffer[:-1]
+                        sys.stdout.write("\b \b")  # Erase character visually from terminal
+
+                else:
+                    server_input_buffer += char
+                    sys.stdout.write(char)  # Immediate visible visual echo
 
 except KeyboardInterrupt:
-    print("\nShutting down Polling Server...")
+    print("\nKilling Server Engine.")
 finally:
     server_socket.close()
     ap.active(False)
-    print("Server cleanly offline.")

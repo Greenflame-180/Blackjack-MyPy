@@ -2,100 +2,91 @@ import network
 import socket
 import time
 import gc
-import uselect
 import sys
+from machine import Timer
 
 SERVER_IP = "192.168.4.1"
 PORT = 5005
 
-# STA Hardware Setup
+# 1. Station Interface Setup
 wlan = network.WLAN(network.STA_IF)
 wlan.active(False)
-time.sleep(1.0)
+time.sleep(0.5)
 wlan.active(True)
-time.sleep(1.0)
+time.sleep(0.5)
 
-print("Connecting to Server...")
+print("Connecting to Wi-Fi Network...")
 wlan.connect('MyESP32S3_AP', 'password123')
 
-timeout = 30
+timeout = 20
 while not wlan.isconnected() and timeout > 0:
     time.sleep(0.5)
     print(".", end="")
     timeout -= 1
 
 if not wlan.isconnected():
-    print("\n[CRITICAL] AP Handshake Failed.")
+    print("\n[CRITICAL] Wi-Fi Connection Failed.")
     sys.exit()
 
-print(f"\nConnected! Local Node IP: {wlan.ifconfig()[0]}")
+print(f"\nConnected! Local IP: {wlan.ifconfig()[0]}")
 
-# Setup Async Client Socket
+# 2. Configure Non-Blocking Socket
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 client_socket.setblocking(False)
 
-# Register Network Stream and Standard Keyboard Streams with Poller Engine
-poller = uselect.poll()
-poller.register(client_socket, uselect.POLLIN)
-poller.register(sys.stdin, uselect.POLLIN)
-
-# Send initial baseline ping to secure ID registry slot on server
+# Register node immediately with host server
 client_socket.sendto(b"[Hello System]", (SERVER_IP, PORT))
 
-print("Start typing to chat in real-time.\n")
-sys.stdout.write("You > ")
-
+print("Type a message below and press ENTER to transmit.\n")
 client_input_buffer = ""
 
+
+# 3. Hardware Timer Callback for Background Network Listening
+def client_listener_callback(t):
+    try:
+        while True:  # Flush all packets waiting in the stack
+            try:
+                data, addr = client_socket.recvfrom(1024)
+                if data:
+                    # Cleanly overwrite line, print network text, restore typing prompt
+                    print(f"\r{data.decode('utf-8')}")
+                    sys.stdout.write(f"You > {client_input_buffer}")
+            except OSError:
+                break
+    except Exception:
+        pass
+
+
+# Fire off background network scanning independent of console terminal loops
+net_timer = Timer(0)
+net_timer.init(period=40, mode=Timer.PERIODIC, callback=client_listener_callback)
+
+# 4. Main Console Entry Loop
 try:
+    sys.stdout.write("You > ")
     while True:
         gc.collect()
 
-        events = poller.poll(50)
+        line = sys.stdin.readline()
+        if not line:
+            continue
 
-        for stream, event in events:
-            # Channel A: Incoming text packet streams from Server/Other Clients
-            if stream == client_socket and (event & uselect.POLLIN):
-                try:
-                    data, addr = client_socket.recvfrom(1024)
-                    if data:
-                        # Clear line visually, display incoming message, rewrite active buffer text
-                        sys.stdout.write(f"\r{data.decode('utf-8')}\nYou > {client_input_buffer}")
-                except OSError:
-                    pass
+        message = line.strip()
+        if message:
+            if message.lower() == 'exit':
+                break
 
-            # Channel B: Character-by-Character Terminal Keyboard Input
-            elif stream == sys.stdin and (event & uselect.POLLIN):
-                char = sys.stdin.read(1)  # Harvest single key input byte
+            try:
+                client_socket.sendto(message.encode('utf-8'), (SERVER_IP, PORT))
+            except OSError:
+                print("\n[ERROR] Direct network pipe drop.")
 
-                if char == '\r' or char == '\n':  # Enter Key pressed
-                    cleaned_sendable = client_input_buffer.strip()
-
-                    if cleaned_sendable.lower() == 'exit':
-                        raise KeyboardInterrupt
-
-                    if cleaned_sendable:
-                        try:
-                            client_socket.sendto(cleaned_sendable.encode('utf-8'), (SERVER_IP, PORT))
-                        except OSError:
-                            sys.stdout.write("\n[Packet drop warning]\n")
-
-                    sys.stdout.write("\n")
-                    client_input_buffer = ""
-                    sys.stdout.write("You > ")
-
-                elif char == '\x08' or char == '\x7f':  # Backspace handling
-                    if len(client_input_buffer) > 0:
-                        client_input_buffer = client_input_buffer[:-1]
-                        sys.stdout.write("\b \b")  # Pop character out of screen buffer view
-
-                else:
-                    client_input_buffer += char
-                    sys.stdout.write(char)  # Immediate visible visual echo
+        sys.stdout.write("You > ")
 
 except KeyboardInterrupt:
-    print("\nExiting chat loop...")
+    print("\nExiting chat environment...")
 finally:
+    net_timer.deinit()
     client_socket.close()
     wlan.active(False)
-    print("Node Offline.")
+    print("Client Offline.")

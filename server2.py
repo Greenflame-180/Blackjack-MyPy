@@ -2,23 +2,22 @@ import network
 import socket
 import time
 import gc
+import uselect
+import sys
 
 SERVER_IP = "192.168.4.1"
 PORT = 5005
 
-# 1. Clean Hardware Initialization for Station Mode
+# STA Hardware Setup
 wlan = network.WLAN(network.STA_IF)
 wlan.active(False)
-time.sleep(1.0)  # Allow hardware registers to clear completely
-
+time.sleep(1.0)
 wlan.active(True)
-time.sleep(1.0)  # Allow driver layer to settle
+time.sleep(1.0)
 
-# 2. Connect to the Server Hotspot
-print("Connecting to Server Wi-Fi...")
+print("Connecting to Multi-Client Mesh Network...")
 wlan.connect('MyESP32S3_AP', 'password123')
 
-# Connection stability validation loop (30 counts max)
 timeout = 30
 while not wlan.isconnected() and timeout > 0:
     time.sleep(0.5)
@@ -26,51 +25,64 @@ while not wlan.isconnected() and timeout > 0:
     timeout -= 1
 
 if not wlan.isconnected():
-    print("\n[CRITICAL ERROR] Connection to server hotspot timed out.")
-    print("Ensure the server board is powered up and sitting nearby.")
-else:
-    client_ip = wlan.ifconfig()[0]
-    print("\n--- CLIENT CONNECTED SUCCESSFULLY ---")
-    print(f"Local Client IP: {client_ip}")
+    print("\n[CRITICAL] Network unavailable.")
+    sys.exit()
 
-    # 3. Open UDP Socket Channel
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+print(f"\n--- CONNECTED --- Local IP: {wlan.ifconfig()[0]}")
 
-    print("\n========================================================")
-    print("Instructions: Type your phrase below and press ENTER.")
-    print("Type 'exit' to terminate the script process safely.")
-    print("========================================================\n")
+# Configure Async Client Socket Channel
+client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+client_socket.setblocking(False)
 
-    try:
-        while True:
-            gc.collect()  # Flush old string buffer history out of RAM before fresh input
+# Initialize Dual-Channel Poller (Listens to network and terminal streams simultaneously)
+poller = uselect.poll()
+poller.register(client_socket, uselect.POLLIN)
+poller.register(sys.stdin, uselect.POLLIN)
 
-            # Fetch terminal character input array
-            message = input("Text to send > ")
+print("\n========================================================")
+print("CHAT CONTROLS:")
+print("-> Simply type text and press ENTER to broadcast globally.")
+print("-> Type '@3 your message' to whisper privately to Client 3.")
+print("-> Type 'exit' to quit cleanly.")
+print("========================================================\n")
 
-            # Process clean string checking
-            cleaned_message = message.strip()
-            if not cleaned_message:
-                continue
+# Send initial handshake ping to register with the server and claim an ID number
+client_socket.sendto(b"[Hello System]", (SERVER_IP, PORT))
 
-            if cleaned_message.lower() == 'exit':
-                print("Exiting runtime client loop...")
-                break
-
-            # Attempt to push data buffer to the targeted endpoint
-            try:
-                client_socket.sendto(cleaned_message.encode('utf-8'), (SERVER_IP, PORT))
-                print(f"-> Package sent successfully.\n")
-            except OSError as socket_err:
-                print(f"Transmission leak detected ({socket_err}). Recycling socket pipeline...")
-                client_socket.close()
-                client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    except KeyboardInterrupt:
-        print("\nHalting Client via user interruption command...")
-    finally:
-        print("De-allocating socket channels.")
-        client_socket.close()
-        wlan.active(False)
+try:
+    while True:
         gc.collect()
-        print("Client completely offline.")
+
+        # Async event block
+        events = poller.poll(150)
+
+        for stream, event in events:
+            # Channel A: Incoming Network Transmission Data
+            if stream == client_socket and (event & uselect.POLLIN):
+                try:
+                    data, addr = client_socket.recvfrom(1024)
+                    if data:
+                        print(f"\n{data.decode('utf-8')}")
+                except OSError:
+                    pass
+
+            # Channel B: Local Character Entry via Terminal Input Pipeline
+            elif stream == sys.stdin and (event & uselect.POLLIN):
+                message = sys.stdin.readline().strip()
+                if not message:
+                    continue
+
+                if message.lower() == 'exit':
+                    raise KeyboardInterrupt
+
+                try:
+                    client_socket.sendto(message.encode('utf-8'), (SERVER_IP, PORT))
+                except OSError:
+                    print("Network delivery pipeline dropped a frame.")
+
+except KeyboardInterrupt:
+    print("\nDisconnecting Chat node...")
+finally:
+    client_socket.close()
+    wlan.active(False)
+    print("Client disconnected.")

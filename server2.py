@@ -5,96 +5,85 @@ import gc
 import sys
 from machine import Timer
 
-SERVER_IP = "192.168.4.1"
-PORT = 5005
+class ClientEventListener:
+    def __init__(self, server_ip, port):
+        self.server_ip = server_ip
+        self.port = port
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.setblocking(False)
+        self.timer = Timer(1)
+        self.on_message_callback = None
 
-# Station Setup
+    def on_message(self, callback):
+        self.on_message_callback = callback
+
+    def start(self):
+        # Fire Handshake registration string
+        self.socket.sendto(b"[Hello System]", (self.server_ip, self.port))
+        self.timer.init(period=40, mode=Timer.PERIODIC, callback=self._check_network)
+
+    def emit(self, text):
+        try:
+            self.socket.sendto(text.encode('utf-8'), (self.server_ip, self.port))
+        except OSError:
+            pass
+
+    def _check_network(self, t):
+        try:
+            while True:
+                try:
+                    data, addr = self.socket.recvfrom(1024)
+                    if not data:
+                        break
+                    if self.on_message_callback:
+                        self.on_message_callback(data.decode('utf-8'))
+                except OSError:
+                    break
+        except Exception:
+            pass
+
+# --- MAIN APP ARCHITECTURE (NO LOOPS) ---
+
 wlan = network.WLAN(network.STA_IF)
-wlan.active(False)
-time.sleep(0.5)
-wlan.active(True)
-time.sleep(0.5)
-
-print("Connecting to Network...")
+wlan.active(False); time.sleep(0.5); wlan.active(True); time.sleep(0.5)
+print("Connecting...")
 wlan.connect('MyESP32S3_AP', 'password123')
 
 timeout = 20
 while not wlan.isconnected() and timeout > 0:
-    time.sleep(0.5)
-    print(".", end="")
-    timeout -= 1
+    time.sleep(0.5); timeout -= 1
 
 if not wlan.isconnected():
-    print("\n[CRITICAL] Wi-Fi Connection Failed.")
     sys.exit()
 
-print(f"\nConnected! Local IP: {wlan.ifconfig()[0]}")
+print(f"Connected to dynamic network. Local IP: {wlan.ifconfig()[0]}")
 
-# Setup Socket Channels
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-client_socket.setblocking(False)
+client = ClientEventListener("192.168.4.1", 5005)
 
-# Register with server
-client_socket.sendto(b"[Hello System]", (SERVER_IP, PORT))
+# Defining your clean Socket-style event listener
+@client.on_message
+def on_broadcast_received(data):
+    sys.stdout.write(f"\r\x1b[K{data}\nYou > ")
 
-print("Dynamic Chat Node Initialized. Type and press ENTER.\n")
-
-needs_prompt_redraw = True
-
-
-def client_listener_callback(t):
-    global needs_prompt_redraw
-    try:
-        while True:
-            try:
-                data, addr = client_socket.recvfrom(1024)
-                if not data:
-                    break
-
-                # Clear terminal line, print incoming network packet feed, and trigger prompt refresh
-                sys.stdout.write(f"\r\x1b[K{data.decode('utf-8')}\n")
-                needs_prompt_redraw = True
-            except OSError:
-                break
-    except Exception:
-        pass
-
-
-# Separate network thread on Timer 1
-net_timer = Timer(1)
-net_timer.init(period=40, mode=Timer.PERIODIC, callback=client_listener_callback)
+# Start listening
+client.start()
 
 try:
     while True:
         gc.collect()
-
-        if needs_prompt_redraw:
-            sys.stdout.write("\r\x1b[KYou > ")
-            needs_prompt_redraw = False
-
+        sys.stdout.write("\r\x1b[KYou > ")
         line = sys.stdin.readline()
-        if not line:
-            continue
-
-        message = line.strip()
-        if message:
-            if message.lower() == 'exit':
-                break
-
-            # Render your own sent messages locally on screen instantly
-            sys.stdout.write(f"\r\x1b[KYou: {message}\n")
-
-            try:
-                client_socket.sendto(message.encode('utf-8'), (SERVER_IP, PORT))
-            except OSError:
-                sys.stdout.write("\r\x1b[K[ERROR] Packet dropped.\n")
-
-        needs_prompt_redraw = True
-
+        if line:
+            msg = line.strip()
+            if msg:
+                if msg.lower() == 'exit':
+                    break
+                sys.stdout.write(f"\r\x1b[KYou: {msg}\n")
+                client.emit(msg)  # Emit text packet directly upward
 except KeyboardInterrupt:
-    print("\nDisconnecting...")
+    pass
 finally:
-    net_timer.deinit()
-    client_socket.close()
+    client.timer.deinit()
+    client.socket.close()
     wlan.active(False)
-    print("Node Offline.")
+    print("\nOffline.")

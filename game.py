@@ -82,16 +82,13 @@ print(f" ╰╴{player_count} players")
 for player in range(0, 1 + player_count):
     print(f"    ╰╴{player} has {game_state[player]} {calculate_score(game_state[player])}")
 
-
 while True:
     if game_state["stood"] == [1] * (player_count+1):
         print("Round over")
         for player in range(0, 1 + player_count):
             print(f"    ╰╴{player} has {game_state[player]} {calculate_score(game_state[player])}")
         break
-    for player in range(0, 1 + player_count):
-        if game_state["stood"][player] == 1:
-            continue
+    for player in range(1, 1 + player_count):
         print("")
         print(f"Player {player}'s turn.")
         print(f"    ╰╴Currently has {', '.join(map(str, game_state[player]))}  Total: {calculate_score(game_state[player])}")
@@ -109,9 +106,18 @@ while True:
         elif move == "s":
             stand(player, game_state)
             print(f"Player {player} has stood with {game_state[player]} {calculate_score(game_state[player])}")
-
-
-
-
-
+        if game_state["stood"][player] == 1:
+            continue
+    if player == 0:
+         # pick the dealer's move
+        if calculate_score(game_state[player]) < 16:
+            hit(player, game_state)
+            if calculate_score(game_state[player]) == "lose":
+                print(f"Lose. {game_state[player]} {calculate_score(game_state[player])}")
+                stand(player, game_state)
+            else:
+                print(f"Dealer now has {game_state[player]} {calculate_score(game_state[player])}")
+        else:
+            stand(player, game_state)
+            print(f"Dealer has stood with {game_state[player]} {calculate_score(game_state[player])}")
 

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="MicroPythonTools">
+    <option name="activeWebReplPresetId" value="802d70e9-411c-40b6-b7cd-27243fe20a96" />
+    <option name="portName" value="COM10" />
+    <option name="webReplPresets">
+      <map>
+        <entry key="802d70e9-411c-40b6-b7cd-27243fe20a96" value="{&quot;id&quot;:&quot;802d70e9-411c-40b6-b7cd-27243fe20a96&quot;,&quot;name&quot;:&quot;Default&quot;}" />
+      </map>
+    </option>
+    <option name="webReplPresetsMigrated" value="true" />
+  </component>
+</project>
